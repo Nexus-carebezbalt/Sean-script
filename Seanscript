@@ -1,0 +1,975 @@
+-- Ultimate SSB1 + Auto Grind + Auto Stinkcoins Combo Script
+local UltimateScript = {}
+
+-- Configuration
+UltimateScript.Config = {
+    -- SSB1 Settings
+    HeadClickInterval = 0.01,
+    EntityCheckInterval = 0.20,
+    EntityClickCount = 15,
+    DoorCloseDelay = 3,
+    BlueHeadCheckDelay = 4,
+    AutoEquipSpeed = 20,
+    MinAutoEquipSpeed = 10,
+    MaxAutoEquipSpeed = 50,
+    
+    -- Auto Grind Settings
+    ClickDelay = 0.1
+}
+
+-- State variables
+UltimateScript.Running = false
+UltimateScript.AutoEquipRunning = false
+UltimateScript.AutoGrindRunning = false
+UltimateScript.AutoStinkcoinsRunning = false
+UltimateScript.Connections = {}
+UltimateScript.Loops = {}
+UltimateScript.GUI = {}
+UltimateScript.Minimized = false
+UltimateScript.LastDoorClose = 0
+UltimateScript.DoorCloseCooldown = 5
+
+-- Tool Names for Auto Equip
+UltimateScript.ToolNames = {
+    "AHHH", "ahhh", "Eahhh", "Eahhht", "Eahht", "Eaht", "Eat", "Eat?"
+}
+
+-- Weapon options
+UltimateScript.Weapons = {"King Slayer", "Classic Sword"}
+UltimateScript.SelectedWeapon = "King Slayer"
+
+-- Priority NPCs for Auto Stinkcoins
+UltimateScript.PriorityNames1 = { "nasty", "sigma robloxian", "raffie", "bananade", "greasy" }
+
+-- Door rotation configurations
+UltimateScript.DoorStates = {
+    Closed = { Rotation = Vector3.new(89.99500274658203, -90, 0), Tolerance = 0.1 },
+    OpenNormal = { Rotation = Vector3.new(180, -14.996999740600586, 89.9990005493164), Tolerance = 0.1 },
+    OpenEntity = { Rotation = Vector3.new(180, -90, 0), Tolerance = 0.1 },
+    OpenEntity2 = { Rotation = Vector3.new(180, 29.99799919128418, 90.0009994506836), Tolerance = 0.1 },
+    OpenEntity3 = { Rotation = Vector3.new(180, 29.998, 90.001), Tolerance = 0.1 }
+}
+
+-- Safe wait function
+function UltimateScript:SafeWait(seconds)
+    local start = tick()
+    repeat
+        game:GetService("RunService").Heartbeat:Wait()
+    until tick() - start >= seconds
+end
+
+-- Safe function call with error handling
+function UltimateScript:SafeCall(func, ...)
+    local success, result = pcall(func, ...)
+    if not success then
+        if not string.find(tostring(result), "is not a valid member") then
+            warn("Script Error: " .. tostring(result))
+        end
+        return nil
+    end
+    return result
+end
+
+-- Make entire GUI draggable
+function UltimateScript:MakeDraggable(frame)
+    local dragging = false
+    local dragInput, mousePos, framePos
+
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            mousePos = input.Position
+            framePos = frame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    frame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    game:GetService("UserInputService").InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - mousePos
+            frame.Position = UDim2.new(framePos.X.Scale, framePos.X.Offset + delta.X, framePos.Y.Scale, framePos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+-- Create button helper
+function UltimateScript:CreateButton(name, position, size, text, parent, color)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Size = size
+    button.Position = position
+    button.Text = text
+    button.BackgroundColor3 = color or Color3.fromRGB(60, 60, 60)
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.Font = Enum.Font.SourceSansBold
+    button.TextSize = 12
+    button.Parent = parent
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 6)
+    UICorner.Parent = button
+    
+    return button
+end
+
+-- Create toggle button
+function UltimateScript:CreateToggle(name, yOffset, state, callback, parent)
+    local button = self:CreateButton(name.."Toggle", UDim2.new(0.05, 0, 0, yOffset), UDim2.new(0.9, 0, 0, 30), 
+                                    name..": "..(state and "ON" or "OFF"), parent, 
+                                    state and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0))
+    
+    button.MouseButton1Click:Connect(function()
+        state = not state
+        button.Text = name..": "..(state and "ON" or "OFF")
+        button.BackgroundColor3 = state and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
+        callback(state)
+    end)
+    
+    return button
+end
+
+-- Auto equip weapon function (runs once when character spawns)
+function UltimateScript:EquipSelectedWeapon()
+    local player = game:GetService("Players").LocalPlayer
+    local character = player.Character
+    local backpack = player:FindFirstChild("Backpack")
+    
+    if not character or not backpack then 
+        return false
+    end
+    
+    for _, weaponName in ipairs(self.Weapons) do
+        local tool = backpack:FindFirstChild(weaponName)
+        if tool then
+            tool.Parent = character
+            print("Equipped weapon: " .. weaponName)
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- ========== SSB1 FUNCTIONS ==========
+function UltimateScript:GetDoorState(door)
+    return self:SafeCall(function()
+        if not door then return "not_found" end
+        local currentRot = door.Rotation
+        
+        if self:VectorsSimilar(currentRot, self.DoorStates.Closed.Rotation, self.DoorStates.Closed.Tolerance) then
+            return "closed"
+        end
+        
+        for stateName, stateData in pairs(self.DoorStates) do
+            if stateName ~= "Closed" and self:VectorsSimilar(currentRot, stateData.Rotation, stateData.Tolerance) then
+                return "open"
+            end
+        end
+        
+        return "unknown"
+    end) or "error"
+end
+
+function UltimateScript:VectorsSimilar(v1, v2, tolerance)
+    return self:SafeCall(function()
+        return math.abs(v1.X - v2.X) < tolerance and
+               math.abs(v1.Y - v2.Y) < tolerance and
+               math.abs(v1.Z - v2.Z) < tolerance
+    end) or false
+end
+
+function UltimateScript:GetDoor()
+    return self:SafeCall(function()
+        return workspace:FindFirstChild("#GAME", true) and 
+               workspace["#GAME"]:FindFirstChild("Map", true) and
+               workspace["#GAME"].Map:FindFirstChild("BlackRoom", true) and
+               workspace["#GAME"].Map.BlackRoom:FindFirstChild("WhiteRoom", true) and
+               workspace["#GAME"].Map.BlackRoom.WhiteRoom:FindFirstChild("Door", true)
+    end)
+end
+
+function UltimateScript:GetFakeHead()
+    return self:SafeCall(function()
+        return workspace:FindFirstChild("#GAME", true) and 
+               workspace["#GAME"]:FindFirstChild("Map", true) and
+               workspace["#GAME"].Map:FindFirstChild("WhiteBasFakeHead", true)
+    end)
+end
+
+function UltimateScript:FindAllEntities()
+    return self:SafeCall(function()
+        local entities = {}
+        local entityNames = {"YellowBas", "BlueBas", "WhiteBas", "GreyBas", "BlackBas"}
+        local gameFolder = workspace:FindFirstChild("#GAME")
+        if not gameFolder then return entities end
+        local map = gameFolder:FindFirstChild("Map")
+        if not map then return entities end
+        
+        for _, entityName in ipairs(entityNames) do
+            local entity = map:FindFirstChild(entityName)
+            if entity then table.insert(entities, entity) end
+        end
+        return entities
+    end) or {}
+end
+
+function UltimateScript:SafeClickDetector(clickDetector)
+    return self:SafeCall(function()
+        if clickDetector and clickDetector:IsA("ClickDetector") then
+            fireclickdetector(clickDetector)
+            return true
+        end
+        return false
+    end)
+end
+
+function UltimateScript:CheckForKnockSound()
+    return self:SafeCall(function()
+        local function findSound(obj)
+            if obj:IsA("Sound") and obj.Name == "BasDoorKnock" then return obj end
+            for _, child in ipairs(obj:GetChildren()) do
+                local found = findSound(child)
+                if found then return found end
+            end
+            return nil
+        end
+        return findSound(workspace)
+    end)
+end
+
+-- SSB1 Automation
+function UltimateScript:StartSSB1()
+    if self.SSB1Running then return end
+    self.SSB1Running = true
+    
+    print("SSB1 Automation Started!")
+    
+    -- Head clicking
+    self.Loops.HeadClicking = game:GetService("RunService").Heartbeat:Connect(function()
+        if not self.SSB1Running then return end
+        local fakeHead = self:GetFakeHead()
+        if fakeHead then 
+            self:SafeClickDetector(fakeHead:FindFirstChildOfClass("ClickDetector"))
+        end
+        self:SafeWait(0.01)
+    end)
+    
+    -- Entity handling
+    local lastEntityCheck = 0
+    self.Loops.EntityHandler = game:GetService("RunService").Heartbeat:Connect(function()
+        if not self.SSB1Running then return end
+        
+        local now = tick()
+        if now - lastEntityCheck < self.Config.EntityCheckInterval then return end
+        lastEntityCheck = now
+        
+        local entities = self:FindAllEntities()
+        for _, entity in ipairs(entities) do
+            local clickDetector = entity:FindFirstChildOfClass("ClickDetector")
+            if clickDetector then
+                for i = 1, self.Config.EntityClickCount do
+                    self:SafeClickDetector(clickDetector)
+                    self:SafeWait(0.02)
+                end
+            end
+        end
+    end)
+    
+    -- Door monitoring with cooldown
+    self.Loops.DoorMonitor = game:GetService("RunService").Heartbeat:Connect(function()
+        if not self.SSB1Running then return end
+        
+        local door = self:GetDoor()
+        if door and door:FindFirstChildOfClass("ClickDetector") then
+            local currentState = self:GetDoorState(door)
+            local now = tick()
+            
+            if currentState == "open" and (now - self.LastDoorClose) > self.DoorCloseCooldown then
+                self:SafeWait(self.Config.DoorCloseDelay)
+                
+                if self:GetDoorState(door) == "open" then
+                    self:SafeClickDetector(door:FindFirstChildOfClass("ClickDetector"))
+                    self.LastDoorClose = now
+                    print("Door closed (cooldown active)")
+                end
+            end
+        end
+    end)
+    
+    -- Blue Head detection
+    self.Loops.BlueHeadDetection = game:GetService("RunService").Heartbeat:Connect(function()
+        if not self.SSB1Running then return end
+        if self:CheckForKnockSound() then
+            self:HandleBlueHead()
+            self:SafeWait(3)
+        end
+    end)
+    
+    if self.GUI.SSB1Status then
+        self.GUI.SSB1Status.Text = "SSB1: ON"
+        self.GUI.SSB1Status.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+    end
+end
+
+function UltimateScript:StopSSB1()
+    self.SSB1Running = false
+    for name, loop in pairs(self.Loops) do
+        if name:find("SSB1") then 
+            loop:Disconnect() 
+            self.Loops[name] = nil
+        end
+    end
+    if self.GUI.SSB1Status then
+        self.GUI.SSB1Status.Text = "SSB1: OFF"
+        self.GUI.SSB1Status.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+    end
+    print("SSB1 Automation Stopped!")
+end
+
+function UltimateScript:HandleBlueHead()
+    local door = self:GetDoor()
+    if not door then return end
+    
+    if self:GetDoorState(door) == "closed" then
+        self:SafeClickDetector(door:FindFirstChildOfClass("ClickDetector"))
+        self:SafeWait(0.5)
+    end
+    
+    local blueBas = self:SafeCall(function()
+        local gameFolder = workspace:FindFirstChild("#GAME")
+        return gameFolder and gameFolder.Map and gameFolder.Map:FindFirstChild("BlueBas")
+    end)
+    
+    if blueBas then
+        local clickDetector = blueBas:FindFirstChildOfClass("ClickDetector")
+        if clickDetector then
+            for i = 1, 15 do
+                self:SafeClickDetector(clickDetector)
+                self:SafeWait(0.05)
+            end
+        end
+    end
+    
+    self:SafeWait(self.Config.BlueHeadCheckDelay)
+    if self:GetDoorState(door) == "open" then
+        self:SafeClickDetector(door:FindFirstChildOfClass("ClickDetector"))
+    end
+end
+
+-- Auto Equip with speed control
+function UltimateScript:StartAutoEquip()
+    if self.AutoEquipRunning then return end
+    self.AutoEquipRunning = true
+    
+    print("Auto Equip Started! Speed: " .. self.Config.AutoEquipSpeed)
+    
+    self.Loops.AutoEquip = task.spawn(function()
+        local player = game:GetService("Players").LocalPlayer
+        while self.AutoEquipRunning do
+            local character = player.Character
+            local backpack = player:FindFirstChild("Backpack")
+            if character and backpack then
+                for _, toolName in ipairs(self.ToolNames) do
+                    if not self.AutoEquipRunning then break end
+                    local tool = backpack:FindFirstChild(toolName)
+                    if tool then
+                        tool.Parent = character
+                        self:SafeWait(0.1)
+                        tool.Parent = backpack
+                        self:SafeWait(1 / self.Config.AutoEquipSpeed)
+                    end
+                end
+            end
+            self:SafeWait(1 / self.Config.AutoEquipSpeed)
+        end
+    end)
+    
+    if self.GUI.AutoEquipStatus then
+        self.GUI.AutoEquipStatus.Text = "AutoEquip: ON"
+        self.GUI.AutoEquipStatus.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+    end
+end
+
+function UltimateScript:StopAutoEquip()
+    self.AutoEquipRunning = false
+    if self.Loops.AutoEquip then
+        task.cancel(self.Loops.AutoEquip)
+        self.Loops.AutoEquip = nil
+    end
+    if self.GUI.AutoEquipStatus then
+        self.GUI.AutoEquipStatus.Text = "AutoEquip: OFF"
+        self.GUI.AutoEquipStatus.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+    end
+    print("Auto Equip Stopped!")
+end
+
+function UltimateScript:SetAutoEquipSpeed(speed)
+    self.Config.AutoEquipSpeed = math.clamp(speed, self.Config.MinAutoEquipSpeed, self.Config.MaxAutoEquipSpeed)
+    if self.GUI.SpeedLabel then
+        self.GUI.SpeedLabel.Text = "Speed: " .. self.Config.AutoEquipSpeed
+    end
+    print("Auto Equip Speed set to: " .. self.Config.AutoEquipSpeed)
+end
+
+-- ========== AUTO GRIND FUNCTIONS ==========
+function UltimateScript:StartAutoGrind()
+    if self.AutoGrindRunning then return end
+    self.AutoGrindRunning = true
+    
+    print("Auto Grind Started!")
+    
+    -- Auto equip weapon when starting auto grind
+    self:EquipSelectedWeapon()
+    
+    -- Game folders
+    local gameFolder = workspace:WaitForChild("#GAME", 10)
+    local foldersFolder = gameFolder:WaitForChild("Folders", 5)
+    local humanoidFolder = foldersFolder:WaitForChild("HumanoidFolder", 5)
+    local npcFolder = humanoidFolder:WaitForChild("NPCFolder", 5)
+    local eventsFolder = game:GetService("ReplicatedStorage"):WaitForChild("Events", 10)
+    local remote = eventsFolder:WaitForChild("MainAttack", 5)
+    
+    if not npcFolder or not remote then
+        warn("Auto Grind: Required game folders not found")
+        return
+    end
+
+    -- Settings for auto grind
+    local autoEatShoot = true
+    local autoWalkEnabled = true
+    local autoTeleportNPCs = true
+
+    -- Helper functions for auto grind
+    local ignoreNPCs = {"Bas","Shopkeeper","Bug","Pets","Stickest Bug","Pet","Stick Bug","Sticker Bug","King","Dead"}
+    local function isIgnored(name)
+        for _, pattern in ipairs(ignoreNPCs) do
+            if name:lower():find(pattern:lower()) then return true end
+        end
+        return false
+    end
+
+    local function getAliveNPCs()
+        local list = {}
+        for _, npc in ipairs(npcFolder:GetChildren()) do
+            if npc:IsA("Model") and not isIgnored(npc.Name) then
+                local humanoid = npc:FindFirstChildOfClass("Humanoid")
+                local hrp = npc:FindFirstChild("HumanoidRootPart")
+                if humanoid and humanoid.Health > 0 and hrp then
+                    table.insert(list, npc)
+                end
+            end
+        end
+        return list
+    end
+
+    local function getDeadNPCs()
+        local list = {}
+        for _, npc in ipairs(npcFolder:GetChildren()) do
+            if npc:IsA("Model") then
+                local humanoid = npc:FindFirstChildOfClass("Humanoid")
+                if humanoid and (humanoid.Health <= 0 or npc.Name:find("Dead")) then
+                    table.insert(list, npc)
+                end
+            end
+        end
+        return list
+    end
+
+    local function getClosestAliveNPC()
+        local aliveNPCs = getAliveNPCs()
+        local closestNPC, closestDistance = nil, math.huge
+        local origin = workspace.CurrentCamera.CFrame.Position
+        for _, npc in ipairs(aliveNPCs) do
+            local hrp = npc:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local dist = (hrp.Position - origin).Magnitude
+                if dist < closestDistance then
+                    closestDistance = dist
+                    closestNPC = npc
+                end
+            end
+        end
+        return closestNPC
+    end
+
+    local function getValidParts(model)
+        local parts = {}
+        for _, part in ipairs(model:GetDescendants()) do
+            if part:IsA("BasePart") and not part:GetAttribute("IsGettingEaten") then
+                table.insert(parts, part)
+            end
+        end
+        return parts
+    end
+
+    self.Loops.AutoGrind = game:GetService("RunService").Heartbeat:Connect(function()
+        if not self.AutoGrindRunning then return end
+        
+        -- Remove all chairs/seats
+        for _, seat in ipairs(workspace:GetDescendants()) do
+            if seat:IsA("Seat") or seat:IsA("VehicleSeat") then
+                seat:Destroy()
+            end
+        end
+
+        -- Auto Eat/Shoot
+        if autoEatShoot then
+            local deadNPCs = getDeadNPCs()
+            local eatOverrideList = {"OOOOOOMEGA","Diamond","Golden","Werewolf","Ruby","Emerald","Amethyst","Mighty","Cracked","Dark"}
+            local function isInOverrideList(name)
+                for _, override in ipairs(eatOverrideList) do
+                    if name:lower():find(override:lower()) then return true end
+                end
+                return false
+            end
+
+            local overrideDead, otherDead = {}, {}
+            for _, npc in ipairs(deadNPCs) do
+                if isInOverrideList(npc.Name) then table.insert(overrideDead,npc) else table.insert(otherDead,npc) end
+            end
+
+            local targetNpc, parts = nil, nil
+            if #overrideDead>0 then
+                for _,npc in ipairs(overrideDead) do
+                    local tryParts = getValidParts(npc)
+                    if #tryParts>0 then targetNpc=npc parts=tryParts break end
+                end
+            elseif #otherDead>0 then
+                for _,npc in ipairs(otherDead) do
+                    local tryParts = getValidParts(npc)
+                    if #tryParts>0 then targetNpc=npc parts=tryParts break end
+                end
+            end
+
+            if targetNpc then
+                local bodyPart = parts[math.random(1,#parts)]
+                local origin = workspace.CurrentCamera.CFrame.Position
+                local targetPos = bodyPart.Position + Vector3.new(math.random(-15,15)/10,math.random(-15,15)/10,math.random(-15,15)/10)
+                local dir = (targetPos-origin).Unit
+                if dir.Magnitude ~= dir.Magnitude then dir = workspace.CurrentCamera.CFrame.LookVector end
+                remote:FireServer({["AN"]="Eat",["D"]=dir,["O"]=origin,["FBP"]=bodyPart})
+            end
+
+            local target = getClosestAliveNPC()
+            if target then
+                local bodyPart = target:FindFirstChild("HumanoidRootPart") or target:FindFirstChildWhichIsA("BasePart")
+                if bodyPart then
+                    local origin = workspace.CurrentCamera.CFrame.Position
+                    local dir = (bodyPart.Position-origin).Unit
+                    if dir.Magnitude ~= dir.Magnitude then dir = workspace.CurrentCamera.CFrame.LookVector end
+                    remote:FireServer({["AN"]="Shoot",["D"]=dir,["O"]=origin,["FBP"]=bodyPart})
+                end
+            end
+        end
+
+        -- Auto Teleport NPCs
+        if autoTeleportNPCs then
+            local player = game:GetService("Players").LocalPlayer
+            local character = player.Character
+            if character and character:FindFirstChild("HumanoidRootPart") then
+                local hrp = character.HumanoidRootPart
+                for _, npc in ipairs(npcFolder:GetChildren()) do
+                    if npc:IsA("Model") and npc:FindFirstChild("HumanoidRootPart") then
+                        local npcHRP = npc.HumanoidRootPart
+                        local frontPos = hrp.CFrame * CFrame.new(0,0,-15)
+                        npcHRP.CFrame = CFrame.new(frontPos.Position) * CFrame.Angles(0, hrp.Orientation.Y,0)
+                    end
+                end
+            end
+        end
+
+        -- Auto Walk
+        if autoWalkEnabled then
+            local player = game:GetService("Players").LocalPlayer
+            local character = player.Character
+            if character and character:FindFirstChild("HumanoidRootPart") then
+                local hrp = character.HumanoidRootPart
+                local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+                if humanoid then
+                    local closestNPC = getClosestAliveNPC()
+                    if closestNPC and closestNPC:FindFirstChild("HumanoidRootPart") then
+                        local goalPos = closestNPC.HumanoidRootPart.Position + Vector3.new(3,0,3)
+                        if (hrp.Position - goalPos).Magnitude > 3 then
+                            humanoid:MoveTo(goalPos)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    
+    if self.GUI.AutoGrindStatus then
+        self.GUI.AutoGrindStatus.Text = "AutoGrind: ON"
+        self.GUI.AutoGrindStatus.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+    end
+end
+
+function UltimateScript:StopAutoGrind()
+    self.AutoGrindRunning = false
+    if self.Loops.AutoGrind then
+        self.Loops.AutoGrind:Disconnect()
+        self.Loops.AutoGrind = nil
+    end
+    if self.GUI.AutoGrindStatus then
+        self.GUI.AutoGrindStatus.Text = "AutoGrind: OFF"
+        self.GUI.AutoGrindStatus.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+    end
+    print("Auto Grind Stopped!")
+end
+
+-- ========== AUTO STINKCOINS FUNCTIONS ==========
+function UltimateScript:StartAutoStinkcoins()
+    if self.AutoStinkcoinsRunning then return end
+    self.AutoStinkcoinsRunning = true
+    
+    print("Auto Stinkcoins Started!")
+    
+    -- Auto equip weapon when starting auto stinkcoins
+    self:EquipSelectedWeapon()
+    
+    -- Game folders
+    local gameFolder = workspace:WaitForChild("#GAME", 10)
+    local foldersFolder = gameFolder:WaitForChild("Folders", 5)
+    local humanoidFolder = foldersFolder:WaitForChild("HumanoidFolder", 5)
+    local mainFolder = humanoidFolder:WaitForChild("NPCFolder", 5)
+    local eventsFolder = game:GetService("ReplicatedStorage"):WaitForChild("Events", 10)
+    local remote = eventsFolder:WaitForChild("MainAttack", 5)
+
+    if not mainFolder or not remote then
+        warn("Auto Stinkcoins: Required game folders not found")
+        return
+    end
+
+    -- Helper functions for auto stinkcoins
+    local function getDeadNPCs()
+        local deadList = {}
+        if not mainFolder then return deadList end
+
+        for _, npc in ipairs(mainFolder:GetChildren()) do
+            if npc:IsA("Model") then
+                local humanoid = npc:FindFirstChildOfClass("Humanoid")
+                if humanoid and (humanoid.Health <= 0 or string.find(humanoid.Name, "Dead", 1, true)) then
+                    local npcNameLower = npc.Name:lower()
+                    for _, priorityName in ipairs(self.PriorityNames1) do
+                        if npcNameLower:find(priorityName:lower(), 1, true) then
+                            table.insert(deadList, npc)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        return deadList
+    end
+
+    local function getValidBodyParts(model)
+        local validParts = {}
+        for _, part in ipairs(model:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local isGettingEaten = part:GetAttribute("IsGettingEaten")
+                if not isGettingEaten then
+                    table.insert(validParts, part)
+                end
+            end
+        end
+        return validParts
+    end
+
+    self.Loops.AutoStinkcoins = game:GetService("RunService").Heartbeat:Connect(function()
+        if not self.AutoStinkcoinsRunning then return end
+        
+        -- Auto Click for stinkcoins
+        local clickRemote = self:SafeCall(function()
+            return game:GetService("ReplicatedStorage").Events.Click
+        end)
+        
+        if clickRemote then
+            clickRemote:FireServer()
+        end
+        
+        -- Auto Eat priority NPCs
+        local deadNPCList = getDeadNPCs()
+        if #deadNPCList > 0 then
+            -- Simple priority: just take the first available dead NPC
+            local targetNpc = deadNPCList[1]
+            if targetNpc and targetNpc.Parent then
+                local validParts = getValidBodyParts(targetNpc)
+                if #validParts > 0 then
+                    local bodyPart = validParts[math.random(1, #validParts)]
+                    local camera = workspace.CurrentCamera
+                    local origin = camera.CFrame.Position
+
+                    local targetPosition = bodyPart.Position
+
+                    -- Add small deviation
+                    local offsetX = (math.random() - 0.5) * 2 * 0.5
+                    local offsetY = (math.random() - 0.5) * 2 * 0.5
+                    local offsetZ = (math.random() - 0.5) * 2 * 0.5
+                    targetPosition = targetPosition + Vector3.new(offsetX, offsetY, offsetZ)
+
+                    local direction = (targetPosition - origin).Unit
+
+                    if direction.X ~= direction.X or direction.Y ~= direction.Y or direction.Z ~= direction.Z then
+                        direction = camera.CFrame.LookVector
+                    end
+
+                    local args = {
+                        [1] = {
+                            ["AN"] = "Eat",
+                            ["D"] = direction,
+                            ["O"] = origin,
+                            ["FBP"] = bodyPart
+                        }
+                    }
+                    remote:FireServer(unpack(args))
+                end
+            end
+        end
+        
+        -- Auto Teleport NPCs (from auto grind)
+        local player = game:GetService("Players").LocalPlayer
+        local character = player.Character
+        if character and character:FindFirstChild("HumanoidRootPart") then
+            local hrp = character.HumanoidRootPart
+            for _, npc in ipairs(mainFolder:GetChildren()) do
+                if npc:IsA("Model") and npc:FindFirstChild("HumanoidRootPart") then
+                    local npcHRP = npc.HumanoidRootPart
+                    local frontPos = hrp.CFrame * CFrame.new(0,0,-15)
+                    npcHRP.CFrame = CFrame.new(frontPos.Position) * CFrame.Angles(0, hrp.Orientation.Y,0)
+                end
+            end
+        end
+    end)
+    
+    if self.GUI.AutoStinkcoinsStatus then
+        self.GUI.AutoStinkcoinsStatus.Text = "AutoStinkcoins: ON"
+        self.GUI.AutoStinkcoinsStatus.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+    end
+end
+
+function UltimateScript:StopAutoStinkcoins()
+    self.AutoStinkcoinsRunning = false
+    if self.Loops.AutoStinkcoins then
+        self.Loops.AutoStinkcoins:Disconnect()
+        self.Loops.AutoStinkcoins = nil
+    end
+    if self.GUI.AutoStinkcoinsStatus then
+        self.GUI.AutoStinkcoinsStatus.Text = "AutoStinkcoins: OFF"
+        self.GUI.AutoStinkcoinsStatus.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+    end
+    print("Auto Stinkcoins Stopped!")
+end
+
+-- ========== GUI CREATION ==========
+function UltimateScript:CreateGUI()
+    local player = game:GetService("Players").LocalPlayer
+    local coreGui = game:GetService("CoreGui")
+    
+    -- Remove existing GUI
+    local existingGUI = coreGui:FindFirstChild("UltimateScriptGUI")
+    if existingGUI then existingGUI:Destroy() end
+    
+    -- Main GUI
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "UltimateScriptGUI"
+    ScreenGui.Parent = coreGui
+    ScreenGui.ResetOnSpawn = false
+    
+    -- Main Window (entire GUI is draggable)
+    local MainWindow = Instance.new("Frame")
+    MainWindow.Size = UDim2.new(0, 300, 0, 400)
+    MainWindow.Position = UDim2.new(0, 50, 0, 50)
+    MainWindow.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    MainWindow.BorderSizePixel = 0
+    MainWindow.Active = true
+    MainWindow.Parent = ScreenGui
+    self:MakeDraggable(MainWindow)
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 8)
+    UICorner.Parent = MainWindow
+    
+    -- Title Bar
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 30)
+    TitleBar.Position = UDim2.new(0, 0, 0, 0)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = MainWindow
+    
+    local TitleBarCorner = Instance.new("UICorner")
+    TitleBarCorner.CornerRadius = UDim.new(0, 8)
+    TitleBarCorner.Parent = TitleBar
+    
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(0, 200, 1, 0)
+    Title.Position = UDim2.new(0, 10, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "ULTIMATE SCRIPT"
+    Title.TextColor3 = Color3.new(1, 1, 1)
+    Title.Font = Enum.Font.SourceSansBold
+    Title.TextSize = 16
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
+    
+    local MinimizeButton = Instance.new("TextButton")
+    MinimizeButton.Size = UDim2.new(0, 30, 0, 30)
+    MinimizeButton.Position = UDim2.new(1, -60, 0, 0)
+    MinimizeButton.Text = "_"
+    MinimizeButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+    MinimizeButton.TextColor3 = Color3.new(1, 1, 1)
+    MinimizeButton.Font = Enum.Font.SourceSansBold
+    MinimizeButton.TextSize = 16
+    MinimizeButton.Parent = TitleBar
+    
+    local CloseButton = Instance.new("TextButton")
+    CloseButton.Size = UDim2.new(0, 30, 0, 30)
+    CloseButton.Position = UDim2.new(1, -30, 0, 0)
+    CloseButton.Text = "X"
+    CloseButton.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+    CloseButton.TextColor3 = Color3.new(1, 1, 1)
+    CloseButton.Font = Enum.Font.SourceSansBold
+    CloseButton.TextSize = 14
+    CloseButton.Parent = TitleBar
+    
+    -- Content Area
+    local ContentFrame = Instance.new("Frame")
+    ContentFrame.Size = UDim2.new(1, 0, 1, -30)
+    ContentFrame.Position = UDim2.new(0, 0, 0, 30)
+    ContentFrame.BackgroundTransparency = 1
+    ContentFrame.Parent = MainWindow
+    ContentFrame.ClipsDescendants = true
+    
+    -- Create sections
+    local yPos = 10
+    
+    -- SSB1 Section
+    self.GUI.SSB1Status = self:CreateToggle("SSB1 Automation", yPos, self.SSB1Running, function(state)
+        if state then self:StartSSB1() else self:StopSSB1() end
+    end, ContentFrame)
+    yPos = yPos + 40
+    
+    -- Auto Equip Section
+    self.GUI.AutoEquipStatus = self:CreateToggle("Auto Equip Tools", yPos, self.AutoEquipRunning, function(state)
+        if state then self:StartAutoEquip() else self:StopAutoEquip() end
+    end, ContentFrame)
+    yPos = yPos + 40
+    
+    -- Speed Controls
+    local SpeedFrame = Instance.new("Frame")
+    SpeedFrame.Size = UDim2.new(0.9, 0, 0, 60)
+    SpeedFrame.Position = UDim2.new(0.05, 0, 0, yPos)
+    SpeedFrame.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    SpeedFrame.Parent = ContentFrame
+    
+    local SpeedCorner = Instance.new("UICorner")
+    SpeedCorner.CornerRadius = UDim.new(0, 6)
+    SpeedCorner.Parent = SpeedFrame
+    
+    self.GUI.SpeedLabel = Instance.new("TextLabel")
+    self.GUI.SpeedLabel.Size = UDim2.new(1, 0, 0, 20)
+    self.GUI.SpeedLabel.Position = UDim2.new(0, 0, 0, 5)
+    self.GUI.SpeedLabel.BackgroundTransparency = 1
+    self.GUI.SpeedLabel.Text = "Speed: " .. self.Config.AutoEquipSpeed
+    self.GUI.SpeedLabel.TextColor3 = Color3.new(1, 1, 1)
+    self.GUI.SpeedLabel.Font = Enum.Font.SourceSansBold
+    self.GUI.SpeedLabel.TextSize = 14
+    self.GUI.SpeedLabel.Parent = SpeedFrame
+    
+    local MinusButton = self:CreateButton("MinusButton", UDim2.new(0.1, 0, 0, 25), UDim2.new(0.2, 0, 0, 25), "-", SpeedFrame, Color3.fromRGB(80, 80, 120))
+    local PlusButton = self:CreateButton("PlusButton", UDim2.new(0.7, 0, 0, 25), UDim2.new(0.2, 0, 0, 25), "+", SpeedFrame, Color3.fromRGB(80, 80, 120))
+    
+    yPos = yPos + 70
+    
+    -- Auto Grind Section
+    self.GUI.AutoGrindStatus = self:CreateToggle("Auto Grind", yPos, self.AutoGrindRunning, function(state)
+        if state then self:StartAutoGrind() else self:StopAutoGrind() end
+    end, ContentFrame)
+    yPos = yPos + 40
+    
+    -- Auto Stinkcoins Section
+    self.GUI.AutoStinkcoinsStatus = self:CreateToggle("Auto Stinkcoins", yPos, self.AutoStinkcoinsRunning, function(state)
+        if state then self:StartAutoStinkcoins() else self:StopAutoStinkcoins() end
+    end, ContentFrame)
+    
+    -- Store GUI references
+    self.GUI.MainWindow = MainWindow
+    self.GUI.ContentFrame = ContentFrame
+    
+    -- Button events
+    MinimizeButton.MouseButton1Click:Connect(function()
+        self.Minimized = not self.Minimized
+        if self.Minimized then
+            ContentFrame.Visible = false
+            MainWindow.Size = UDim2.new(0, 300, 0, 30)
+            MinimizeButton.Text = "+"
+        else
+            ContentFrame.Visible = true
+            MainWindow.Size = UDim2.new(0, 300, 0, 400)
+            MinimizeButton.Text = "_"
+        end
+    end)
+    
+    CloseButton.MouseButton1Click:Connect(function()
+        ScreenGui:Destroy()
+        self:StopAllScripts()
+    end)
+    
+    -- Speed control events
+    MinusButton.MouseButton1Click:Connect(function()
+        self:SetAutoEquipSpeed(self.Config.AutoEquipSpeed - 1)
+    end)
+    
+    PlusButton.MouseButton1Click:Connect(function()
+        self:SetAutoEquipSpeed(self.Config.AutoEquipSpeed + 1)
+    end)
+    
+    print("Ultimate Script GUI Created!")
+    print("Features: SSB1 Automation, Auto Equip, Auto Grind, Auto Stinkcoins")
+end
+
+-- Stop all scripts
+function UltimateScript:StopAllScripts()
+    self:StopSSB1()
+    self:StopAutoEquip()
+    self:StopAutoGrind()
+    self:StopAutoStinkcoins()
+    print("All scripts stopped!")
+end
+
+-- Initialize
+function UltimateScript:Init()
+    self:CreateGUI()
+    
+    -- Auto equip weapon when character spawns
+    game:GetService("Players").LocalPlayer.CharacterAdded:Connect(function()
+        self:SafeWait(2) -- Wait for character to fully load
+        self:EquipSelectedWeapon()
+    end)
+    
+    -- Auto equip weapon if character already exists
+    if game:GetService("Players").LocalPlayer.Character then
+        self:SafeWait(1)
+        self:EquipSelectedWeapon()
+    end
+    
+    print("=== ULTIMATE SCRIPT LOADED ===")
+    print("SSB1 Automation - For Super Secret Badge 1")
+    print("Auto Equip - Cycles through all Eat tool variants")
+    print("Auto Grind - Full automation (Eat/Shoot + Teleport + Walk)")
+    print("Auto Stinkcoins - Clicks + Priority NPC Eating + Teleport")
+end
+
+UltimateScript:Init()
+return UltimateScript
